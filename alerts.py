@@ -13,7 +13,10 @@ EMAIL_ALERTS_ENABLED = os.getenv("EMAIL_ALERTS", "false").lower() == "true"
 
 def send_email_alert(subject: str, message: str, image_path: str = None):
     if not EMAIL_ALERTS_ENABLED:
-        print(f"📧 [Email disabled] {subject}")
+        try:
+            print(f"[Email disabled] {subject}")
+        except UnicodeEncodeError:
+            print(f"[Email disabled] {subject}".encode("ascii", "replace").decode())
         return
 
     sender   = os.getenv("EMAIL_SENDER",   "")
@@ -44,7 +47,7 @@ def send_email_alert(subject: str, message: str, image_path: str = None):
             server.login(sender, password)
             server.send_message(msg)
 
-        print("✅ Email sent")
+        print("[OK] Email sent")
 
     except Exception as e:
         print(f"⚠️  Email failed: {e}")

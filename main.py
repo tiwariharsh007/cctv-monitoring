@@ -6,13 +6,14 @@ Camera source → config.yaml:
   source: "data/test_videos/front.mp4" → local video file
   source: "rtsp://user:pass@ip:554"    → IP/CCTV camera (auto-reconnects)
 """
-import os, sys, csv, glob, time, yaml
+import os, sys, csv, glob, time, yaml, json
 import cv2
 from datetime import datetime, timedelta
 from collections import Counter
 
 from db import init_db, insert_log
 from analysis_engine import SurveillanceEngine
+from zone_draw_tool import ZoneDrawingApp
 
 os.makedirs("snapshots", exist_ok=True)
 os.makedirs("logs",      exist_ok=True)
@@ -62,7 +63,65 @@ def save_daily_report(session_logs: list):
                            "visible_count","posture","alert"])
         writer.writeheader()
         writer.writerows(session_logs)
-    print(f"📄 Report saved → {path}")
+    print(f"[OK] Report saved -> {path}")
+
+
+# ── ZONE SETUP ────────────────────────────────────────────────────────────────
+
+def setup_zones(source, cam_name: str):
+    """
+    Offer the user a chance to draw / edit detection zones before monitoring.
+
+    Opens the first frame of `source` in the zone editor.  If the user
+    declines or the source can't be read, returns silently.
+    """
+    zone_cfg = "zones/zone_config.json"
+    existing = 0
+    if os.path.exists(zone_cfg):
+        try:
+            data = json.load(open(zone_cfg))
+            existing = len(data.get(cam_name, []))
+        except Exception:
+            pass
+
+    print("\n┌─ Zone Configuration ───────────────────────────────────────")
+    if existing:
+        print(f"│  {existing} zone(s) already configured for '{cam_name}'")
+    else:
+        print("│  No zones configured yet.")
+    print("│  Draw zones to scope detections (loitering, crowd, fall, …)")
+    print("│  to specific areas — or skip to monitor the full frame.")
+    print("└────────────────────────────────────────────────────────────")
+
+    ans = input("Open Zone Editor before starting? [y/N]: ").strip().lower()
+    if ans != "y":
+        if existing:
+            print(f"  Using existing {existing} zone(s).\n")
+        else:
+            print("  Skipping zone setup — all detections will be global.\n")
+        return
+
+    # Grab a representative frame from the source
+    src, src_kind = resolve_source(source)
+    cap = open_capture(src, src_kind == "stream")
+    if not cap.isOpened():
+        print("  Could not open source for zone setup — skipping.\n")
+        return
+
+    frame = None
+    for _ in range(10):          # skip a few frames for a cleaner snapshot
+        ret, frame = cap.read()
+        if not ret:
+            break
+    cap.release()
+
+    if frame is None:
+        print("  Could not read a frame for zone setup — skipping.\n")
+        return
+
+    app = ZoneDrawingApp(camera_name=cam_name, frame=frame)
+    app.run()
+    print("  Zone editor closed — starting monitoring…\n")
 
 
 # ── CAMERA SOURCE ──────────────────────────────────────────────────────────────
@@ -148,13 +207,16 @@ def run(chosen_source=None):
     is_file   = src_kind == "file"
     is_stream = src_kind == "stream"
 
-    print(f"🎥  Opening [{src_kind}]: {source}")
+    # ── ZONE SETUP (before engine init so zones are loaded fresh) ─────────────
+    setup_zones(CAM_SOURCE if chosen_source is None else chosen_source, CAM_NAME)
+
+    print(f"[INFO] Opening [{src_kind}]: {source}")
     cap = open_capture(source, is_stream)
     if not cap.isOpened():
-        hint = ("→ Phone stream? Check the URL, that the app is streaming, and that "
+        hint = ("-> Phone stream? Check the URL, that the app is streaming, and that "
                 "phone + PC share the same Wi-Fi." if is_stream else
-                "→ Check config.yaml → camera → source")
-        print(f"❌  Cannot open: {source}\n    {hint}")
+                "-> Check config.yaml -> camera -> source")
+        print(f"[ERR] Cannot open: {source}\n    {hint}")
         return
 
     # Files play faster than real-time → derive timestamps from the video clock so
@@ -176,7 +238,7 @@ def run(chosen_source=None):
     for f in ["logs/live_feed.jpg", "logs/heatmap_main.jpg"]:
         if os.path.exists(f):
             os.remove(f)
-    print("🗑️  Previous session cleared — starting fresh.")
+    print("[INFO] Previous session cleared -- starting fresh.")
 
     # State
     last_frame    = None
@@ -187,17 +249,17 @@ def run(chosen_source=None):
     session_logs  = []
     session_start = time.time()
 
-    print(f"✅  {CAM_NAME} running — press Q to quit\n")
+    print(f"[OK] {CAM_NAME} running -- press Q to quit\n")
 
     while True:
         ret, frame = cap.read()
         if not ret:
             if is_stream:
-                print("⚠️  Stream lost — reconnecting in 3 s …")
+                print("[WARN] Stream lost -- reconnecting in 3 s ...")
                 time.sleep(3)
                 cap = open_capture(source, is_stream)
                 continue
-            print("📹  Video ended.")
+            print("[INFO] Video ended.")
             break
 
         frame_count += 1
@@ -213,7 +275,11 @@ def run(chosen_source=None):
         now_str = stamp_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         # ── FULL ANALYSIS + ALERTING (shared engine) ─────────────────────────
-        result        = engine.process(frame)
+        try:
+            result = engine.process(frame)
+        except Exception as exc:
+            print(f"[ERR] Frame {frame_count} processing error: {exc}")
+            continue
         frame         = result["frame"]
         visible_count = result["visible_count"]
         posture       = result["posture"]

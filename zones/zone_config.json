@@ -1,23 +1,101 @@
 {
     "Main CCTV": [
-      {
-        "id": "restricted_zone_1",
-        "type": "restricted",
-        "points": [[50, 50], [250, 50], [250, 200], [50, 200]]
-      }
+        {
+            "id": "restricted_zone_1",
+            "type": "restricted",
+            "points": [
+                [
+                    50,
+                    50
+                ],
+                [
+                    250,
+                    50
+                ],
+                [
+                    250,
+                    200
+                ],
+                [
+                    50,
+                    200
+                ]
+            ]
+        },
+        {
+            "id": "zone_2",
+            "type": "restricted",
+            "label": "zone_2",
+            "points": [
+                [
+                    842,
+                    283
+                ],
+                [
+                    853,
+                    631
+                ],
+                [
+                    1121,
+                    630
+                ],
+                [
+                    1113,
+                    278
+                ]
+            ],
+            "monitored_activities": [
+                "intrusion",
+                "running"
+            ]
+        }
     ],
     "store_front": [
-      {
-        "id": "restricted_zone_1",
-        "type": "restricted",
-        "points": [[100, 200], [200, 200], [200, 300], [100, 300]]
-      }
+        {
+            "id": "restricted_zone_1",
+            "type": "restricted",
+            "points": [
+                [
+                    100,
+                    200
+                ],
+                [
+                    200,
+                    200
+                ],
+                [
+                    200,
+                    300
+                ],
+                [
+                    100,
+                    300
+                ]
+            ]
+        }
     ],
     "back_exit": [
-      {
-        "id": "exit_zone",
-        "type": "restricted",
-        "points": [[50, 50], [300, 50], [300, 150], [50, 150]]
-      }
+        {
+            "id": "exit_zone",
+            "type": "restricted",
+            "points": [
+                [
+                    50,
+                    50
+                ],
+                [
+                    300,
+                    50
+                ],
+                [
+                    300,
+                    150
+                ],
+                [
+                    50,
+                    150
+                ]
+            ]
+        }
     ]
 }

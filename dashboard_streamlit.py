@@ -114,8 +114,11 @@ def render_analysis():
                         "Use the **/video** endpoint, e.g. `http://192.168.1.37:8080/video`.")
             _stop_analysis(); return
         st.session_state._an_cap    = cap
+        # Use the configured camera name (matches zone_config.json keys) so that
+        # zones drawn with zone_draw_tool are applied during dashboard analysis.
+        _cam_name = _CFG.get("camera", {}).get("name", "Main CCTV")
         st.session_state._an_engine = SurveillanceEngine(
-            _CFG, cam_name=st.session_state.an_label or "Dashboard",
+            _CFG, cam_name=_cam_name,
             detector=get_detector(), captions=False)   # email self-gated by .env
         st.session_state._an_db     = init_db("logs/analytics.db")
         st.session_state._an_events = []
@@ -138,7 +141,11 @@ def render_analysis():
     visible = cin = cout = 0
     alerts = []
     if st.session_state.an_detect:
-        result  = engine.process(frame)               # full pipeline + alert firing
+        try:
+            result = engine.process(frame)            # full pipeline + alert firing
+        except Exception as _exc:
+            st.error(f"Analysis error: {_exc}")
+            _stop_analysis(); return
         frame   = result["frame"]
         visible = result["visible_count"]
         cin, cout = result["in_count"], result["out_count"]
@@ -339,6 +346,51 @@ with tab_live:
             st.rerun()
         st.caption("Recorded files and live streams play here the same way, with the same overlay. "
                    "`python main.py` additionally logs to the database that powers the charts.")
+
+    _zone_cfg_path = "zones/zone_config.json"
+    _cam_name_cfg  = _CFG.get("camera", {}).get("name", "Main CCTV")
+    with st.expander("Zone Configuration", expanded=False):
+        st.markdown(f"**Camera:** `{_cam_name_cfg}`")
+
+        _zone_data = {}
+        if os.path.exists(_zone_cfg_path):
+            try:
+                import json as _json
+                with open(_zone_cfg_path) as _zf:
+                    _zone_data = _json.load(_zf)
+            except Exception:
+                pass
+
+        _zones_for_cam = _zone_data.get(_cam_name_cfg, [])
+        if _zones_for_cam:
+            st.success(f"{len(_zones_for_cam)} zone(s) configured")
+            for _z in _zones_for_cam:
+                acts = ", ".join(_z.get("monitored_activities", [_z.get("type", "?")]))
+                pts  = len(_z.get("points", []))
+                st.write(f"- **{_z['id']}** | type: `{_z.get('type','?')}` "
+                         f"| activities: `{acts}` | {pts} pts")
+        else:
+            st.info("No zones configured yet for this camera.")
+
+        zc1, zc2 = st.columns(2)
+        with zc1:
+            if st.button("Reload zones", help="Pick up zones saved by zone_draw_tool"):
+                if st.session_state.get("_an_engine"):
+                    st.session_state._an_engine.reload_zones()
+                st.rerun()
+        with zc2:
+            if st.button("Launch Zone Editor",
+                         help="Opens zone_draw_tool.py in a new window (requires local display)"):
+                import subprocess as _sp
+                _sp.Popen(["python", "zone_draw_tool.py"],
+                          creationflags=getattr(_sp, "CREATE_NEW_CONSOLE", 0))
+                st.info("Zone editor launched — draw your zones, press S to save, "
+                        "then click Reload zones above.")
+
+        st.caption("Zones drawn here apply to the *analysis overlay* above and to "
+                   "`python main.py`. Activities selected per zone control which "
+                   "detectors are scoped to that region.")
+
     st.divider()
 
     # System online/offline based on how fresh the live frame is

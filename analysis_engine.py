@@ -85,6 +85,25 @@ class SurveillanceEngine:
         self._last_alert    = {}
         os.makedirs("snapshots", exist_ok=True)
 
+    def reload_zones(self):
+        """Hot-reload zone config from disk (call after zone_draw_tool saves)."""
+        self.zones.reload()
+
+    # ── zone-gate helper ────────────────────────────────────────────────────────
+
+    def _zone_gate(self, activity: str, tracked: dict) -> bool:
+        """
+        Returns True when an alert for `activity` should fire.
+
+        Logic:
+          - No zones configured for this activity → True (global, existing behaviour).
+          - Zones configured AND at least one person is currently inside → True.
+          - Zones configured but nobody inside any relevant zone → False.
+        """
+        filtered = self.zones.filter_tracked_for_activity(
+            self.cam_name, tracked, activity)
+        return filtered is None or bool(filtered)
+
     # ── alert plumbing ──────────────────────────────────────────────────────────
     def _should_alert(self, key: str) -> bool:
         now = time.time()
@@ -168,7 +187,7 @@ class SurveillanceEngine:
             if max(1, x2 - x1) / max(1, y2 - y1) > 1.4:
                 posture = "Lying"
         self._fall_frames = self._fall_frames + 1 if posture == "Lying" else 0
-        if self._fall_frames >= self.FALL_CONFIRM:
+        if self._fall_frames >= self.FALL_CONFIRM and self._zone_gate("fall", tracked):
             cv2.putText(frame, "FALL DETECTED", (10, 95), FONT, 0.85, (0, 0, 255), 2)
             alert_parts.append("Fall")
             if self._should_alert("fall"):
@@ -177,18 +196,22 @@ class SurveillanceEngine:
         # tailgating
         if self.counter.count_in != prev_in or self.counter.count_out != prev_out:
             now_t = time.time()
-            if self._last_crossing > 0 and (now_t - self._last_crossing) < self.TAILGATE:
+            if (self._last_crossing > 0
+                    and (now_t - self._last_crossing) < self.TAILGATE
+                    and self._zone_gate("tailgating", tracked)):
                 alert_parts.append("Tailgating")
                 if self._should_alert("tailgating"):
                     self._fire(frame, "tailgating",
                                "Two people crossed line in quick succession", "⚠ TAILGATING ALERT")
             self._last_crossing = now_t
 
-        # loitering
+        # loitering — update state for all tracked (keeps dwell times for box colouring),
+        # but only fire alerts when the person is inside a loitering zone (if any defined).
         for loit in self.dwell.update(tracked):
-            alert_parts.append("Loitering")
-            if self._should_alert("loitering"):
-                self._fire(frame, "loitering", loit, "⚠ LOITERING ALERT")
+            if self._zone_gate("loitering", tracked):
+                alert_parts.append("Loitering")
+                if self._should_alert("loitering"):
+                    self._fire(frame, "loitering", loit, "⚠ LOITERING ALERT")
 
         # inactivity
         inactive = [oid for oid, pts in self.tracker.object_history.items()
@@ -202,17 +225,23 @@ class SurveillanceEngine:
 
         # running
         for run_alert in self.speed.update(tracked):
-            cv2.putText(frame, "RUNNING", (10, 125), FONT, 0.75, (0, 140, 255), 2)
-            alert_parts.append("Running")
-            if self._should_alert("running"):
-                self._fire(frame, "running", run_alert, "⚡ RUNNING DETECTED")
+            if self._zone_gate("running", tracked):
+                cv2.putText(frame, "RUNNING", (10, 125), FONT, 0.75, (0, 140, 255), 2)
+                alert_parts.append("Running")
+                if self._should_alert("running"):
+                    self._fire(frame, "running", run_alert, "⚡ RUNNING DETECTED")
 
-        # crowd
-        if visible > self.CROWD:
-            cv2.putText(frame, f"CROWD ({visible})", (10, 155), FONT, 0.8, (0, 60, 255), 2)
+        # crowd — use zone-resident count when crowd zones are defined
+        zone_crowd = self.zones.count_in_activity_zones(self.cam_name, tracked, "crowd")
+        crowd_count = visible if zone_crowd is None else zone_crowd
+        if crowd_count > self.CROWD:
+            lbl = f"CROWD ({crowd_count})" + ("" if zone_crowd is None else " in zone")
+            cv2.putText(frame, lbl, (10, 155), FONT, 0.8, (0, 60, 255), 2)
             alert_parts.append("Crowd")
             if self._should_alert("crowd"):
-                self._fire(frame, "crowd", f"{visible} people in frame", "⚠ CROWD ALERT")
+                self._fire(frame, "crowd", f"{crowd_count} people"
+                           + (" in crowd zone" if zone_crowd is not None else " in frame"),
+                           "⚠ CROWD ALERT")
 
         # max capacity
         if self.MAX_CAPACITY > 0 and visible >= self.MAX_CAPACITY:
@@ -221,25 +250,55 @@ class SurveillanceEngine:
                 self._fire(frame, "capacity", f"{visible} people — limit {self.MAX_CAPACITY}",
                            "🔴 CAPACITY LIMIT REACHED")
 
-        # zone intrusion
-        frame = self.zones.draw_zones(frame, self.cam_name)
+        # zone intrusion - supports multiple zone types (restricted, entry_exit, high_value, loitering)
+        frame = self.zones.draw_zones(frame, self.cam_name, tracked)
         wrapped = {oid: {"centroid": pos} for oid, pos in tracked.items()}
-        for intr in self.zones.detect_intrusions(self.cam_name, wrapped):
-            zid = intr["zone_id"]
-            cv2.putText(frame, f"ZONE: {zid}", tuple(intr["centroid"]), FONT, 0.55, (0, 0, 255), 2)
-            alert_parts.append("Intrusion")
-            if self._should_alert(f"intrusion_{zid}"):
-                self._fire(frame, "intrusion", f"Zone {zid} breached", "🚨 ZONE INTRUSION")
+        zone_alerts = self.zones.detect_intrusions(self.cam_name, wrapped)
+        
+        for alert in zone_alerts:
+            zone_type = alert.get("zone_type", "restricted")
+            zone_id = alert.get("zone_id", "zone")
+            severity = alert.get("severity", "LOW")
+            message = alert.get("message", "Zone alert")
+            
+            # Only fire HIGH severity alerts (restrict intrusion warnings)
+            if zone_type == "restricted" and severity == "HIGH":
+                alert_parts.append("Intrusion")
+                if self._should_alert(f"intrusion_{zone_id}"):
+                    self._fire(frame, "intrusion", 
+                             f"Unauthorized access: {message}",
+                             f"🚨 ZONE INTRUSION - {zone_id}")
+            
+            elif zone_type == "high_value" and severity == "MEDIUM":
+                alert_parts.append("SuspiciousActivity")
+                if self._should_alert(f"highvalue_{zone_id}"):
+                    self._fire(frame, "suspicious",
+                             f"High-value area alert: {message}",
+                             f"⚠️ SUSPICIOUS ACTIVITY - {zone_id}")
+            
+            elif zone_type == "loitering" and severity == "MEDIUM":
+                alert_parts.append("Loitering")
+                if self._should_alert(f"loiter_{zone_id}"):
+                    self._fire(frame, "loitering",
+                             f"Loitering detected: {message}",
+                             f"⏱️ LOITERING - {zone_id}")
+            
+            # entry_exit is informational only (LOW severity)
 
-        # abandoned object
+        # abandoned object — zone-gate checks whether the item's centroid is in an
+        # abandoned_object zone (or fires globally if no such zones are defined).
         for ab in self.abandoned.update(raw_yolo, tracked):
             x1, y1, x2, y2 = ab["box"]
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(frame, f"UNATTENDED {ab['type'].upper()}", (x1, y1 - 8),
-                        FONT, 0.55, (0, 0, 255), 2)
-            alert_parts.append("AbandonedObject")
-            if self._should_alert("abandoned"):
-                self._fire(frame, "abandoned", f"Unattended {ab['type']}", "🧳 UNATTENDED ITEM")
+            cx_ab, cy_ab = (x1 + x2) // 2, (y1 + y2) // 2
+            in_zone = self.zones.point_in_activity_zone(
+                self.cam_name, (cx_ab, cy_ab), "abandoned_object")
+            if in_zone is None or in_zone:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.putText(frame, f"UNATTENDED {ab['type'].upper()}", (x1, y1 - 8),
+                            FONT, 0.55, (0, 0, 255), 2)
+                alert_parts.append("AbandonedObject")
+                if self._should_alert("abandoned"):
+                    self._fire(frame, "abandoned", f"Unattended {ab['type']}", "🧳 UNATTENDED ITEM")
 
         # vehicle accident (collision / sudden stop)
         if self.accident is not None:
@@ -258,7 +317,7 @@ class SurveillanceEngine:
                                f"{top['type']} — {top['detail']}", "🚑 VEHICLE ACCIDENT")
 
         # after-hours
-        if not self._within_hours() and visible > 0:
+        if not self._within_hours() and visible > 0 and self._zone_gate("after_hours", tracked):
             cv2.putText(frame, "AFTER-HOURS MOTION", (10, 185), FONT, 0.75, (0, 0, 255), 2)
             alert_parts.append("AfterHours")
             if self._should_alert("after_hours"):

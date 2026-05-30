@@ -112,23 +112,6 @@ class ZoneIntrusionDetector:
                     break
         return result
 
-    def point_in_activity_zone(self, camera_name: str,
-                               point: tuple, activity: str):
-        """
-        Check whether a specific (cx, cy) point is inside any zone monitoring
-        `activity`.
-
-        Returns None  → no zones configured for this activity (no filter).
-        Returns True  → inside at least one relevant zone.
-        Returns False → zones exist but this point is not inside any of them.
-        """
-        if not self.has_zones_for_activity(camera_name, activity):
-            return None
-        relevant = [z for z in self.zones.get(camera_name, [])
-                    if activity in self._zone_activities(z)]
-        pt = (int(point[0]), int(point[1]))
-        return any(self.point_in_polygon(pt, z["points"]) for z in relevant)
-
     def count_in_activity_zones(self, camera_name: str,
                                  tracked: dict, activity: str):
         """

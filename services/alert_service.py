@@ -11,5 +11,8 @@ def handle_alert(alert_type: str, details: str, image_path: str = None) -> dict:
     }
     severity  = severity_map.get(alert_type.lower(), "LOW")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [{severity}] {alert_type.upper()} → {details}")
+    try:
+        print(f"[{timestamp}] [{severity}] {alert_type.upper()} -> {details}")
+    except UnicodeEncodeError:
+        print(f"[{timestamp}] [{severity}] {alert_type.upper()} -> {details}".encode("ascii", "replace").decode())
     return {"time": timestamp, "type": alert_type, "severity": severity, "details": details}
