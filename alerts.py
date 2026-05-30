@@ -39,28 +39,15 @@ def send_email_alert(subject: str, message: str, image_path: str = None):
                 msg.attach(part)
             print(f"📎 Snapshot attached: {image_path}")
 
-        # Use port 465 with SSL for better reliability
-        try:
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
-                server.login(sender, password)
-                server.send_message(msg)
-        except (smtplib.SMTPException, OSError, TimeoutError):
-            # Fallback to port 587 with STARTTLS if 465 fails
-            with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
-                server.starttls()
-                server.login(sender, password)
-                server.send_message(msg)
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.send_message(msg)
 
         print("✅ Email sent")
 
-    except smtplib.SMTPAuthenticationError:
-        print(f"⚠️  Email failed: Invalid email or password")
-    except smtplib.SMTPException as e:
-        print(f"⚠️  Email failed: SMTP error - {str(e)[:100]}")
-    except (OSError, TimeoutError) as e:
-        print(f"⚠️  Email failed: Network error - {str(e)[:100]}")
     except Exception as e:
-        print(f"⚠️  Email failed: {type(e).__name__} - {str(e)[:100]}")
+        print(f"⚠️  Email failed: {e}")
 
 
 def send_whatsapp_alert(message: str):
