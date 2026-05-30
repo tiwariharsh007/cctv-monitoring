@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic Logs Dashboard</title>
+</head>
+<body>
+    <h1>Traffic Logs Dashboard</h1>
+    
+    <!-- Query Form -->
+    <form method="get">
+        Camera ID: <input type="text" name="camera_id" placeholder="Enter Camera ID" value="{{ request.args.get('camera_id') }}">
+        Start Time: <input type="datetime-local" name="start_time" value="{{ request.args.get('start_time') }}">
+        End Time: <input type="datetime-local" name="end_time" value="{{ request.args.get('end_time') }}">
+        <button type="submit">Search</button>
+    </form>
+    
+    <!-- Logs Display -->
+    <table border="1">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Camera ID</th>
+                <th>In</th>
+                <th>Out</th>
+                <th>Posture</th>
+                <th>Alert</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.time }}</td>
+                <td>{{ log.camera_id }}</td>
+                <td>{{ log.count_in }}</td>
+                <td>{{ log.count_out }}</td>
+                <td>{{ log.posture }}</td>
+                <td>{{ log.alert }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

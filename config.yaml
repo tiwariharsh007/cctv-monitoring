@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────
+#  Smart CCTV Surveillance — Configuration
+# ─────────────────────────────────────────────────────────────────
+
+camera:
+  # source options:
+  #   0                                      → built-in / USB webcam
+  #   "data/test_videos/front.mp4"           → local video file
+  #   "http://192.168.1.5:8080/video"        → Android phone, "IP Webcam" app (MJPEG)
+  #   "rtsp://192.168.1.5:8554/live"         → phone RTSP app / IP / CCTV camera
+  #   "http://192.168.1.5:4747/video"        → DroidCam (Android/iOS)
+  # The phone and this PC must be on the SAME Wi-Fi network. See README for full steps.
+  # On `python main.py` you choose recorded video vs live camera; these are the defaults.
+  source:      "data/test_videos/front.mp4"      # default RECORDED video
+  live_source: "http://192.168.1.37:8080/video"  # default LIVE stream (phone IP Webcam)
+  name:   "Main CCTV"
+  skip_frames: 2
+
+detection:
+  crowd_threshold:   4     # alert when this many people visible at once
+  max_capacity:      0     # hard capacity limit (0 = disabled)
+  line_position:     300   # y-pixel of IN/OUT counting line
+  loitering_secs:    120   # seconds before loitering alert
+  running_speed_px:  20    # centroid px/frame threshold for running
+  abandoned_frames:  150   # frames a bag is stationary before alert
+  inactivity_frames: 30    # frames motionless before inactivity alert
+  fall_confirm_frames: 3   # consecutive lying-posture frames before fall alert
+  tailgate_secs:     3     # seconds window to detect two people crossing line
+
+  # Vehicle accident (heuristic): collision = overlapping vehicles + sharp decel,
+  # or a moving vehicle that suddenly stops. Tune for your camera angle/distance.
+  accident_enabled:    true
+  accident_iou:        0.30   # box overlap (IoU) between two vehicles to suspect contact
+  accident_speed_drop: 0.55   # fractional speed drop counted as an impact
+  accident_min_speed:  6      # px/frame a vehicle must have moved to count as "in motion"
+
+business_hours:
+  enabled: true
+  start: "08:00"
+  end:   "22:00"
+
+alerts:
+  cooldown_seconds: 60
+  captions_enabled: false  # set true if HuggingFace API key is set in .env
+
+reports:
+  folder:         "reports"
+  save_daily_csv: true

@@ -1,0 +1,23 @@
+{
+    "Main CCTV": [
+      {
+        "id": "restricted_zone_1",
+        "type": "restricted",
+        "points": [[50, 50], [250, 50], [250, 200], [50, 200]]
+      }
+    ],
+    "store_front": [
+      {
+        "id": "restricted_zone_1",
+        "type": "restricted",
+        "points": [[100, 200], [200, 200], [200, 300], [100, 300]]
+      }
+    ],
+    "back_exit": [
+      {
+        "id": "exit_zone",
+        "type": "restricted",
+        "points": [[50, 50], [300, 50], [300, 150], [50, 150]]
+      }
+    ]
+}

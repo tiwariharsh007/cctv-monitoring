@@ -1,0 +1,42 @@
+# Backend
+fastapi
+uvicorn
+flask
+
+# AI / Computer Vision
+ultralytics
+opencv-python
+mediapipe
+torchvision
+
+# Data & Processing
+numpy
+pandas
+matplotlib
+
+# Frontend / Dashboard
+streamlit
+pydeck
+altair
+
+# Utilities
+requests
+pyyaml
+gitpython
+aiohttp
+aiohttp-retry
+python-dotenv
+
+# Image Captioning
+huggingface-hub
+pillow
+
+# Validation / Schema
+jsonschema
+jsonschema-specifications
+
+# Alerts / Communication
+twilio
+
+# Audio (optional)
+sounddevice
