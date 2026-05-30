@@ -31,6 +31,20 @@ except Exception:                       # caption deps optional
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
+# Must match the identical function in zone_draw_tool.py so that zone
+# coordinates recorded by the editor always align with analysis frames.
+def _fit1280(frame: np.ndarray) -> np.ndarray:
+    """Letterbox-resize to 1280×720, preserving aspect ratio."""
+    if frame.shape[:2] == (720, 1280):
+        return frame
+    h, w = frame.shape[:2]
+    scale = min(1280 / w, 720 / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = cv2.resize(frame, (nw, nh))
+    canvas = np.zeros((720, 1280, 3), dtype=np.uint8)
+    canvas[(720-nh)//2:(720-nh)//2+nh, (1280-nw)//2:(1280-nw)//2+nw] = resized
+    return canvas
+
 
 def _box_color_by_dwell(dwell_secs: int):
     if dwell_secs > 60:
@@ -73,6 +87,7 @@ class SurveillanceEngine:
         self.speed     = SpeedDetector(speed_threshold=self.RUN_SPEED)
         self.abandoned = AbandonedObjectDetector(stationary_frames=self.ABAND_FRAMES)
         self.zones     = ZoneIntrusionDetector()
+        self._zone_cfg_mtime = self._zone_cfg_mtime_now()
         self.accident  = AccidentDetector(
             iou_threshold=d.get("accident_iou", 0.30),
             speed_drop=d.get("accident_speed_drop", 0.55),
@@ -85,9 +100,21 @@ class SurveillanceEngine:
         self._last_alert    = {}
         os.makedirs("snapshots", exist_ok=True)
 
+    @staticmethod
+    def _zone_cfg_mtime_now() -> float:
+        try:
+            return os.path.getmtime("zones/zone_config.json")
+        except OSError:
+            return 0.0
+
     def reload_zones(self):
         """Hot-reload zone config from disk (call after zone_draw_tool saves)."""
         self.zones.reload()
+        self._zone_cfg_mtime = self._zone_cfg_mtime_now()
+
+    def set_active_zones(self, zone_ids: list):
+        """Restrict zone detection to the supplied zone IDs for this camera."""
+        self.zones.filter_to_active(self.cam_name, zone_ids)
 
     # ── zone-gate helper ────────────────────────────────────────────────────────
 
@@ -142,6 +169,16 @@ class SurveillanceEngine:
     # ── per-frame analysis ──────────────────────────────────────────────────────
     def process(self, frame):
         """Annotate `frame` in place, fire any alerts, and return a log row dict."""
+        # Auto-reload zones if zone_config.json was updated on disk
+        mtime = self._zone_cfg_mtime_now()
+        if mtime > self._zone_cfg_mtime:
+            self.zones.reload()
+            self._zone_cfg_mtime = mtime
+
+        # Normalise to 1280×720 using letterbox (aspect-ratio-preserving).
+        # Zone editor uses the same transform, so coordinates always align.
+        frame = _fit1280(frame)
+
         if self.heatmap is None:
             self.heatmap = np.zeros(frame.shape[:2], dtype=np.float32)
         alert_parts = []

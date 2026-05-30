@@ -14,17 +14,12 @@ Usage (programmatic — called from main.py before monitoring starts):
 
 Drawing controls:
     LEFT-CLICK   : Add polygon point
-    RIGHT-CLICK  : Finish polygon → opens activity selection panel
+    RIGHT-CLICK  : Finish polygon and save zone (intrusion detection)
     Z            : Undo last point
     C            : Clear current in-progress polygon
     D            : Delete the last saved zone
     S            : Save all zones and exit
     Q            : Quit (prompts to save)
-
-Activity selection (after right-click, panel shown on right):
-    1-9          : Toggle activity on/off
-    ENTER/SPACE  : Confirm selected activities and save zone
-    ESC          : Cancel — discard the polygon, return to drawing
 """
 
 import cv2
@@ -45,32 +40,26 @@ if sys.platform == "win32":
             pass
 
 
-# ── Activity catalogue ─────────────────────────────────────────────────────────
-# Each entry: (activity_key, short_label, description)
-ACTIVITIES = [
-    ("intrusion",        "Intrusion",        "Alert on any entry into zone"),
-    ("loitering",        "Loitering",        "Long stays beyond threshold"),
-    ("running",          "Running",          "Fast movement detected"),
-    ("crowd",            "Crowd",            "Too many people in zone"),
-    ("fall",             "Fall",             "Person falls in zone"),
-    ("fighting",         "Fighting",         "Aggressive movement in zone"),
-    ("abandoned_object", "Abandoned Object", "Unattended item left in zone"),
-    ("after_hours",      "After Hours",      "Motion during off-hours"),
-    ("tailgating",       "Tailgating",       "Two entries in quick succession"),
-]
+# ── Shared frame helper ────────────────────────────────────────────────────────
+def _fit1280(frame: np.ndarray) -> np.ndarray:
+    """
+    Resize to 1280×720 preserving aspect ratio.
+    Ultra-wide or non-16:9 sources are padded with black bars so that
+    zone coordinates are tied to scene content, not a squeezed projection.
+    """
+    if frame.shape[:2] == (720, 1280):
+        return frame
+    h, w = frame.shape[:2]
+    scale = min(1280 / w, 720 / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = cv2.resize(frame, (nw, nh))
+    canvas = np.zeros((720, 1280, 3), dtype=np.uint8)
+    x0 = (1280 - nw) // 2
+    y0 = (720  - nh) // 2
+    canvas[y0:y0+nh, x0:x0+nw] = resized
+    return canvas
 
-# Backward-compat zone type derived from the first selected activity
-_ACTIVITY_TO_ZONE_TYPE = {
-    "intrusion":        "restricted",
-    "loitering":        "loitering",
-    "running":          "restricted",
-    "crowd":            "restricted",
-    "fall":             "restricted",
-    "fighting":         "restricted",
-    "abandoned_object": "high_value",
-    "after_hours":      "restricted",
-    "tailgating":       "entry_exit",
-}
+
 
 # Zone overlay colours (BGR) for display
 _ZONE_COLORS = {
@@ -83,7 +72,7 @@ _ZONE_COLORS = {
 
 class ZoneDrawingApp:
     """
-    Interactive zone drawing with per-zone activity selection.
+    Interactive zone drawing tool for intrusion detection.
 
     Modes
     -----
@@ -103,9 +92,6 @@ class ZoneDrawingApp:
         self.camera_name = camera_name
         self.zones: list       = []
         self.current_zone: list = []    # points being drawn this session
-        self._selecting        = False  # True while activity panel is visible
-        self._frozen_frame     = None   # frame frozen during activity selection
-        self._selected_activities: set = set()
         self._mouse_pos        = (0, 0) # tracks live cursor for rubber-band line
 
         self.load_existing_zones()
@@ -113,7 +99,7 @@ class ZoneDrawingApp:
         # ── source setup ──────────────────────────────────────────────────────
         if frame is not None:
             # Static-frame mode: resize once, re-use forever
-            self._static_frame = cv2.resize(frame, (1280, 720))
+            self._static_frame = _fit1280(frame)
             self.cap            = None
             self.frame_idx      = 0
             self.total_frames   = 1
@@ -174,7 +160,7 @@ class ZoneDrawingApp:
         if self._video_frame is None and self.cap is not None:
             ret, raw = self.cap.read()
             if ret:
-                self._video_frame = cv2.resize(raw, (1280, 720))
+                self._video_frame = _fit1280(raw)
                 self.frame_idx   += 1
 
         if self._video_frame is not None:
@@ -190,7 +176,7 @@ class ZoneDrawingApp:
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, new_idx)
         ret, raw = self.cap.read()
         if ret:
-            self._video_frame = cv2.resize(raw, (1280, 720))
+            self._video_frame = _fit1280(raw)
             self.frame_idx    = new_idx
             print(f"  Frame {self.frame_idx} / {self.total_frames}")
 
@@ -281,85 +267,26 @@ class ZoneDrawingApp:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1)
         return frame
 
-    # ── activity selection overlay ─────────────────────────────────────────────
-
-    def _draw_activity_panel(self, frame: np.ndarray) -> np.ndarray:
-        _, w = frame.shape[:2]
-        panel_x = w - 450
-
-        overlay  = frame.copy()
-        panel_h  = 55 + len(ACTIVITIES) * 42 + 70
-        cv2.rectangle(overlay, (panel_x - 14, 55), (w - 8, 55 + panel_h), (18, 18, 18), -1)
-        cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
-        cv2.rectangle(frame, (panel_x - 14, 55), (w - 8, 55 + panel_h), (60, 60, 60), 1)
-
-        cv2.putText(frame, "ASSIGN ACTIVITIES TO ZONE",
-                    (panel_x, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 220, 255), 2)
-        cv2.putText(frame,
-                    "Number key = toggle   ENTER = confirm   ESC = cancel",
-                    (panel_x, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1)
-
-        for i, (key, label, desc) in enumerate(ACTIVITIES):
-            y        = 140 + i * 42
-            selected = key in self._selected_activities
-
-            box_col  = (0, 200, 80) if selected else (80, 80, 80)
-            cv2.rectangle(frame, (panel_x, y - 18), (panel_x + 22, y + 4),
-                          box_col, -1 if selected else 1)
-            if selected:
-                cv2.putText(frame, "v", (panel_x + 4, y + 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2)
-
-            cv2.putText(frame, f"[{i + 1}]", (panel_x + 28, y + 3),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 0), 1)
-
-            lbl_col  = (50, 255, 120) if selected else (200, 200, 200)
-            cv2.putText(frame, label, (panel_x + 72, y + 3),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, lbl_col, 1 + int(selected))
-            cv2.putText(frame, desc, (panel_x + 72, y + 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (110, 110, 110), 1)
-
-        bot_y = 140 + len(ACTIVITIES) * 42 + 20
-        if self._selected_activities:
-            cv2.putText(frame,
-                        f"ENTER — confirm ({len(self._selected_activities)} selected)",
-                        (panel_x, bot_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 200, 80), 2)
-        else:
-            cv2.putText(frame, "Select at least one activity",
-                        (panel_x, bot_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (60, 80, 200), 1)
-        cv2.putText(frame, "ESC — cancel zone", (panel_x, bot_y + 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (100, 100, 200), 1)
-
-        # Darken the polygon area so the panel stands out
-        if self.current_zone and len(self.current_zone) >= 3:
-            pts_arr = np.array(self.current_zone, dtype=np.int32)
-            cv2.polylines(frame, [pts_arr], isClosed=True, color=(0, 255, 0), thickness=2)
-
-        return frame
-
     # ── mouse callback ─────────────────────────────────────────────────────────
 
     def _mouse_callback(self, event, x, y, _flags, _param):
-        # Always track mouse position (used for rubber-band preview line)
-        self._mouse_pos = (x, y)
+        # Convert fullscreen canvas coordinates → 1280×720 image coordinates.
+        # _fs_map = (scale, x_offset, y_offset) set in run() before the loop.
+        scale, x0, y0 = getattr(self, "_fs_map", (1.0, 0, 0))
+        ix = max(0, min(1279, int((x - x0) / scale)))
+        iy = max(0, min(719,  int((y - y0) / scale)))
 
-        if self._selecting:
-            return  # ignore clicks while activity panel is open
+        self._mouse_pos = (ix, iy)
 
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.current_zone.append((x, y))
-            print(f"  Point {len(self.current_zone)} added at ({x}, {y})"
-                  + (f"  — right-click to finish"
+            self.current_zone.append((ix, iy))
+            print(f"  Point {len(self.current_zone)} added at ({ix}, {iy})"
+                  + ("  — right-click to finish"
                      if len(self.current_zone) >= 3 else ""))
 
         elif event == cv2.EVENT_RBUTTONDOWN:
             if len(self.current_zone) >= 3:
-                # Freeze the current composite frame for the panel background
-                self._frozen_frame     = self._last_display.copy()
-                self._selected_activities = set()
-                self._selecting        = True
+                self._finalise_zone()
             else:
                 print(f"  Need >= 3 points to close a polygon "
                       f"(have {len(self.current_zone)})")
@@ -367,118 +294,102 @@ class ZoneDrawingApp:
     # ── zone finalisation ──────────────────────────────────────────────────────
 
     def _finalise_zone(self):
-        activities = list(self._selected_activities)
-        zone_type  = _ACTIVITY_TO_ZONE_TYPE.get(activities[0], "restricted")
-        zone_id    = f"zone_{len(self.zones) + 1}"
-
+        zone_id = f"zone_{len(self.zones) + 1}"
         self.zones.append({
             "id":                   zone_id,
-            "type":                 zone_type,
+            "type":                 "restricted",
             "label":                zone_id,
             "points":               self.current_zone.copy(),
-            "monitored_activities": activities,
+            "monitored_activities": ["intrusion"],
         })
-        print(f"  Zone '{zone_id}' saved — activities: {', '.join(activities)}")
-
-        self.current_zone     = []
-        self._selecting       = False
-        self._frozen_frame    = None
+        print(f"  Zone '{zone_id}' saved (intrusion detection)")
+        self.current_zone = []
 
     # ── main loop ──────────────────────────────────────────────────────────────
 
     def run(self):
-        # ASCII-only window name: Unicode dashes create two ghost windows on Windows
         win = f"Zone Editor - {self.camera_name}"
 
-        # WINDOW_AUTOSIZE: window dimensions exactly match the frame —
-        # guarantees mouse coordinates are never offset by DPI scaling.
-        cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+        # ── detect screen resolution ───────────────────────────────────────────
+        try:
+            import ctypes as _ct
+            _u32 = _ct.windll.user32
+            SW = int(_u32.GetSystemMetrics(0))
+            SH = int(_u32.GetSystemMetrics(1))
+        except Exception:
+            SW, SH = 1920, 1080
+
+        # ── letterbox: fit 1280×720 into the screen without stretching ─────────
+        _scale = min(SW / 1280, SH / 720)
+        _dw    = int(1280 * _scale)
+        _dh    = int(720  * _scale)
+        _x0    = (SW - _dw) // 2
+        _y0    = (SH - _dh) // 2
+
+        # Store mapping used by _mouse_callback to convert canvas → image coords
+        self._fs_map = (_scale, _x0, _y0)
+
+        # ── create fullscreen borderless window ────────────────────────────────
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.setMouseCallback(win, self._mouse_callback)
 
-        # Initialise _last_display so the right-click freeze always has a frame
         self._last_display = self._get_background()
 
-        print(f"\n  Zone Editor  |  Camera: {self.camera_name}")
+        print(f"\n  Zone Editor  |  Camera: {self.camera_name}  (FULLSCREEN {SW}x{SH})")
         print("  LEFT-CLICK to add polygon points.")
-        print("  RIGHT-CLICK (3+ points) to finish a polygon and select activities.")
+        print("  RIGHT-CLICK (3+ points) to finish and save zone.")
         print("  Press S to save and exit,  Q to quit without saving.\n")
 
         while True:
-            # ── build the display frame ────────────────────────────────────────
-            if self._selecting:
-                display = self._frozen_frame.copy()
-                display = self._draw_activity_panel(display)
-            else:
-                display = self._get_background()
-                display = self._draw_saved_zones(display)
-                display = self._draw_current_polygon(display)
-                display = self._draw_hud(display)
-                self._last_display = display.copy()  # keep for right-click freeze
+            # ── build the 1280×720 logic frame ────────────────────────────────
+            display = self._get_background()
+            display = self._draw_saved_zones(display)
+            display = self._draw_current_polygon(display)
+            display = self._draw_hud(display)
+            self._last_display = display.copy()
 
-            cv2.imshow(win, display)
+            # ── scale to fullscreen canvas and show ────────────────────────────
+            _scaled = cv2.resize(display, (_dw, _dh), interpolation=cv2.INTER_LINEAR)
+            _canvas = np.zeros((SH, SW, 3), dtype=np.uint8)
+            _canvas[_y0:_y0+_dh, _x0:_x0+_dw] = _scaled
+            cv2.imshow(win, _canvas)
             key = cv2.waitKey(30) & 0xFF
 
-            # ── activity selection mode ────────────────────────────────────────
-            if self._selecting:
-                for i in range(len(ACTIVITIES)):
-                    if key == ord(str(i + 1)):
-                        act = ACTIVITIES[i][0]
-                        if act in self._selected_activities:
-                            self._selected_activities.discard(act)
-                            print(f"  [ ] {ACTIVITIES[i][1]} deselected")
-                        else:
-                            self._selected_activities.add(act)
-                            print(f"  [x] {ACTIVITIES[i][1]} selected")
+            # ── key handling ───────────────────────────────────────────────────
+            if key == ord('s'):
+                self.save_zones()
+                break
 
-                if key in (13, ord(' ')):         # Enter or Space → confirm
-                    if self._selected_activities:
-                        self._finalise_zone()
-                    else:
-                        print("  No activities selected — zone discarded.")
-                        self.current_zone = []
-                        self._selecting   = False
-
-                elif key == 27:                   # ESC → cancel
-                    print("  Zone cancelled.")
-                    self.current_zone = []
-                    self._selecting   = False
-
-            # ── drawing mode ───────────────────────────────────────────────────
-            else:
-                if key == ord('s'):
+            elif key == ord('q'):
+                ans = input("\n  Save zones before quitting? [Y/n]: ").strip().lower()
+                if ans != 'n':
                     self.save_zones()
-                    break
+                break
 
-                elif key == ord('q'):
-                    ans = input("\n  Save zones before quitting? [Y/n]: ").strip().lower()
-                    if ans != 'n':
-                        self.save_zones()
-                    break
+            elif key == ord('z'):
+                if self.current_zone:
+                    removed = self.current_zone.pop()
+                    print(f"  Undo — removed point {removed}")
+                else:
+                    print("  Nothing to undo.")
 
-                elif key == ord('z'):
-                    if self.current_zone:
-                        removed = self.current_zone.pop()
-                        print(f"  Undo — removed point {removed}")
-                    else:
-                        print("  Nothing to undo.")
+            elif key == ord('c'):
+                self.current_zone = []
+                print("  Current polygon cleared.")
 
-                elif key == ord('c'):
-                    self.current_zone = []
-                    print("  Current polygon cleared.")
+            elif key == ord('d'):
+                if self.zones:
+                    removed = self.zones.pop()
+                    print(f"  Deleted zone: {removed['id']}")
+                else:
+                    print("  No zones to delete.")
 
-                elif key == ord('d'):
-                    if self.zones:
-                        removed = self.zones.pop()
-                        print(f"  Deleted zone: {removed['id']}")
-                    else:
-                        print("  No zones to delete.")
-
-                # Video-only navigation — refreshes the frozen background frame
-                elif self.cap is not None:
-                    if key == ord('n'):
-                        self._advance_video(+30)
-                    elif key == ord('p'):
-                        self._advance_video(-30)
+            elif self.cap is not None:
+                if key == ord('n'):
+                    self._advance_video(+30)
+                elif key == ord('p'):
+                    self._advance_video(-30)
 
         # Destroy by the same ASCII name used at creation
         cv2.destroyWindow(win)
@@ -490,7 +401,45 @@ class ZoneDrawingApp:
 
 if __name__ == "__main__":
     import glob as _glob
+    import argparse as _ap
 
+    # When launched from the Streamlit dashboard the --camera / --source args
+    # are passed automatically so no interactive prompts are needed.
+    parser = _ap.ArgumentParser(description="Zone Drawing Tool")
+    parser.add_argument("--camera", default="", help="Camera name (e.g. 'Main CCTV')")
+    parser.add_argument("--source", default="", help="Video path or webcam index")
+    args = parser.parse_args()
+
+    # ── Non-interactive mode (launched from Streamlit with args) ───────────────
+    if args.camera and args.source:
+        camera_name = args.camera
+        src = args.source
+
+        # Webcam index?
+        if src.isdigit():
+            cap = cv2.VideoCapture(int(src))
+            if not cap.isOpened():
+                print(f"Cannot open webcam {src}.")
+                sys.exit(1)
+            for _ in range(5):
+                cap.read()
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                print("Could not read frame from webcam.")
+                sys.exit(1)
+            ZoneDrawingApp(camera_name=camera_name, frame=frame).run()
+
+        elif os.path.exists(src):
+            ZoneDrawingApp(camera_name=camera_name, video_path=src).run()
+
+        else:
+            print(f"Source not found: {src}")
+            sys.exit(1)
+
+        sys.exit(0)
+
+    # ── Interactive mode (run directly from terminal) ─────────────────────────
     print("\n" + "=" * 50)
     print("   ZONE DRAWING & ACTIVITY CONFIGURATION")
     print("=" * 50)
@@ -508,7 +457,7 @@ if __name__ == "__main__":
         if not cap.isOpened():
             print("Cannot open webcam.")
             sys.exit(1)
-        for _ in range(5):          # discard first frames (exposure settling)
+        for _ in range(5):
             cap.read()
         ret, frame = cap.read()
         cap.release()

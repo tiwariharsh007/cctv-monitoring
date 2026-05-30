@@ -1,52 +1,29 @@
 {
     "Main CCTV": [
         {
-            "id": "restricted_zone_1",
+            "id": "zone_1",
             "type": "restricted",
+            "label": "zone_1",
             "points": [
                 [
-                    50,
-                    50
+                    423,
+                    316
                 ],
                 [
-                    250,
-                    50
+                    425,
+                    608
                 ],
                 [
-                    250,
-                    200
+                    519,
+                    608
                 ],
                 [
-                    50,
-                    200
-                ]
-            ]
-        },
-        {
-            "id": "zone_2",
-            "type": "restricted",
-            "label": "zone_2",
-            "points": [
-                [
-                    842,
-                    283
-                ],
-                [
-                    853,
-                    631
-                ],
-                [
-                    1121,
-                    630
-                ],
-                [
-                    1113,
-                    278
+                    528,
+                    315
                 ]
             ],
             "monitored_activities": [
-                "intrusion",
-                "running"
+                "intrusion"
             ]
         }
     ],

@@ -59,6 +59,17 @@ class ZoneIntrusionDetector:
         self.zones = self._load(self._config_path)
         self._zone_history.clear()
 
+    def filter_to_active(self, camera_name: str, active_ids: list):
+        """Keep only zones whose id is in active_ids for this camera.
+        Pass an empty list to disable all zones for that camera."""
+        if camera_name not in self.zones:
+            return
+        self.zones[camera_name] = [
+            z for z in self.zones[camera_name]
+            if z.get("id") in active_ids
+        ]
+        self._zone_history.clear()
+
     # ── geometry ───────────────────────────────────────────────────────────────
 
     @staticmethod
