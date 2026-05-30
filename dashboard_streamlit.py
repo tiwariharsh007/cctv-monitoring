@@ -44,14 +44,14 @@ DEFAULT_LIVE_URL = str(_CFG.get("camera", {}).get("live_source", "http://192.168
 
 ALERT_TYPES = [
     "Fall", "Tailgating", "Running", "Crowd",
-    "CapacityWarning", "Loitering", "Inactivity", "AbandonedObject",
-    "AfterHours", "Accident",
+    "Inactivity", "AbandonedObject",
+    "Accident",
 ]
 SEVERITY = {
     "Accident": "HIGH", "Fall": "HIGH", "Intrusion": "HIGH",
-    "AbandonedObject": "HIGH", "AfterHours": "HIGH",
-    "CapacityWarning": "HIGH", "Tailgating": "HIGH",
-    "Crowd": "MEDIUM", "Loitering": "MEDIUM",
+    "AbandonedObject": "HIGH",
+    "Tailgating": "HIGH",
+    "Crowd": "MEDIUM",
     "Running": "MEDIUM", "Inactivity": "MEDIUM",
 }
 SEV_COLOR = {"HIGH": "#e63946", "MEDIUM": "#f4a261", "LOW": "#adb5bd"}
@@ -436,8 +436,13 @@ with tab0:
 
             _eng = SurveillanceEngine(
                 _CFG, cam_name=CAM_NAME,
-                detector=get_detector(), captions=False,
+                detector=get_detector(), captions=True,
             )
+            # Configure the brand-new engine with the CURRENT selection right away
+            # so it never runs a single frame monitoring activities the user has
+            # deselected.
+            if hasattr(_eng, "set_monitored_activities"):
+                _eng.set_monitored_activities(st.session_state.get("sel_activities", []))
             st.session_state._an_cap      = _cap
             st.session_state._an_engine   = _eng
             st.session_state._an_db       = init_db(DB_PATH)
@@ -474,6 +479,16 @@ with tab0:
                 except Exception:
                     pass
             st.session_state._az_applied = list(_az) if _az is not None else None
+
+        # Sync the engine's monitored-activity set to the CURRENT sidebar
+        # selection on EVERY frame. This is a trivial set assignment, and doing
+        # it unconditionally (instead of guarding on a cached "_activities_applied"
+        # value that can drift across start/stop) guarantees that deselecting an
+        # activity silences it immediately — it can never keep monitoring an
+        # activity the user has turned off.
+        _sel = st.session_state.get("sel_activities", [])
+        if hasattr(_engine, "set_monitored_activities"):
+            _engine.set_monitored_activities(_sel)
 
         ok, frame = _cap.read()
         if not ok:

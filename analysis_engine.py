@@ -17,7 +17,6 @@ from tracker import CentroidTracker
 from line_counter import LineCounter
 from detectors.zone_intrusion   import ZoneIntrusionDetector
 from detectors.speed            import SpeedDetector
-from detectors.dwell_time       import DwellTimeTracker
 from detectors.abandoned_object import AbandonedObjectDetector
 from detectors.accident         import AccidentDetector
 from alerts import send_email_alert
@@ -58,20 +57,14 @@ class SurveillanceEngine:
     def __init__(self, cfg: dict, cam_name="Main CCTV", detector=None,
                  captions=False, email_alerts=True):
         d  = cfg.get("detection", {})
-        bh = cfg.get("business_hours", {})
-        self.CROWD        = d.get("crowd_threshold", 4)
-        self.MAX_CAPACITY = d.get("max_capacity", 0)
+        self.CROWD        = d.get("crowd_threshold", 5)
         self.LINE_POS     = d.get("line_position", 300)
-        self.LOIT_SECS    = d.get("loitering_secs", 120)
         self.RUN_SPEED    = d.get("running_speed_px", 20)
         self.ABAND_FRAMES = d.get("abandoned_frames", 150)
         self.INACT_FRAMES = d.get("inactivity_frames", 30)
         self.FALL_CONFIRM = d.get("fall_confirm_frames", 3)
         self.TAILGATE     = d.get("tailgate_secs", 3)
         self.ACCIDENT_ON  = d.get("accident_enabled", True)
-        self.BH_ENABLED   = bh.get("enabled", False)
-        self.BH_START     = bh.get("start", "08:00")
-        self.BH_END       = bh.get("end", "22:00")
         self.COOLDOWN     = cfg.get("alerts", {}).get("cooldown_seconds", 60)
 
         self.cam_name     = cam_name
@@ -83,7 +76,6 @@ class SurveillanceEngine:
         self.detector  = detector or PersonDetector()
         self.tracker   = CentroidTracker(max_disappeared=15, max_history=20)
         self.counter   = LineCounter(line_position=self.LINE_POS)
-        self.dwell     = DwellTimeTracker(alert_threshold_secs=self.LOIT_SECS)
         self.speed     = SpeedDetector(speed_threshold=self.RUN_SPEED)
         self.abandoned = AbandonedObjectDetector(stationary_frames=self.ABAND_FRAMES)
         self.zones     = ZoneIntrusionDetector()
@@ -98,6 +90,7 @@ class SurveillanceEngine:
         self._fall_frames   = 0
         self._last_crossing = 0.0
         self._last_alert    = {}
+        self.monitored_activities = set()  # Activities to monitor (controlled by dashboard)
         os.makedirs("snapshots", exist_ok=True)
 
     @staticmethod
@@ -106,6 +99,18 @@ class SurveillanceEngine:
             return os.path.getmtime("zones/zone_config.json")
         except OSError:
             return 0.0
+
+    def set_monitored_activities(self, activities: list):
+        """Set which activities to monitor. Only these will trigger alerts."""
+        self.monitored_activities = set(activities) if activities else set()
+
+    def _is_activity_monitored(self, activity: str) -> bool:
+        """Check if an activity should be monitored."""
+        # Intrusion is always monitored (zone-based)
+        if activity == "Intrusion":
+            return True
+        # Other activities only monitored if explicitly selected
+        return activity in self.monitored_activities
 
     def reload_zones(self):
         """Hot-reload zone config from disk (call after zone_draw_tool saves)."""
@@ -139,11 +144,6 @@ class SurveillanceEngine:
             return True
         return False
 
-    def _within_hours(self) -> bool:
-        if not self.BH_ENABLED:
-            return True
-        return self.BH_START <= datetime.now().strftime("%H:%M") <= self.BH_END
-
     def _save_snapshot(self, frame, event_type: str):
         try:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -157,7 +157,7 @@ class SurveillanceEngine:
         snap = self._save_snapshot(frame, event_type)   # fast local write
         handle_alert(event_type, detail, snap)          # fast console log
 
-        # Email (and optional AI caption) are network calls that can take seconds —
+        # Email with AI-generated message from image analysis are network calls that can take seconds —
         # run them off-thread so a fired alert never freezes the frame loop.
         if self.email_alerts:
             def _notify():
@@ -224,7 +224,7 @@ class SurveillanceEngine:
             if max(1, x2 - x1) / max(1, y2 - y1) > 1.4:
                 posture = "Lying"
         self._fall_frames = self._fall_frames + 1 if posture == "Lying" else 0
-        if self._fall_frames >= self.FALL_CONFIRM and self._zone_gate("fall", tracked):
+        if self._fall_frames >= self.FALL_CONFIRM and self._zone_gate("fall", tracked) and self._is_activity_monitored("Fall"):
             cv2.putText(frame, "FALL DETECTED", (10, 95), FONT, 0.85, (0, 0, 255), 2)
             alert_parts.append("Fall")
             if self._should_alert("fall"):
@@ -235,34 +235,27 @@ class SurveillanceEngine:
             now_t = time.time()
             if (self._last_crossing > 0
                     and (now_t - self._last_crossing) < self.TAILGATE
-                    and self._zone_gate("tailgating", tracked)):
+                    and self._zone_gate("tailgating", tracked)
+                    and self._is_activity_monitored("Tailgating")):
                 alert_parts.append("Tailgating")
                 if self._should_alert("tailgating"):
                     self._fire(frame, "tailgating",
                                "Two people crossed line in quick succession", "⚠ TAILGATING ALERT")
             self._last_crossing = now_t
 
-        # loitering — update state for all tracked (keeps dwell times for box colouring),
-        # but only fire alerts when the person is inside a loitering zone (if any defined).
-        for loit in self.dwell.update(tracked):
-            if self._zone_gate("loitering", tracked):
-                alert_parts.append("Loitering")
-                if self._should_alert("loitering"):
-                    self._fire(frame, "loitering", loit, "⚠ LOITERING ALERT")
-
         # inactivity
         inactive = [oid for oid, pts in self.tracker.object_history.items()
                     if len(pts) >= self.INACT_FRAMES
                     and max(p[0] for p in pts) - min(p[0] for p in pts) < 8
                     and max(p[1] for p in pts) - min(p[1] for p in pts) < 8]
-        if any(oid in inactive for oid in tracked):
+        if any(oid in inactive for oid in tracked) and self._is_activity_monitored("Inactivity"):
             alert_parts.append("Inactivity")
             if self._should_alert("inactivity"):
                 self._fire(frame, "inactivity", "Person motionless", "⚠ INACTIVITY ALERT")
 
         # running
         for run_alert in self.speed.update(tracked):
-            if self._zone_gate("running", tracked):
+            if self._zone_gate("running", tracked) and self._is_activity_monitored("Running"):
                 cv2.putText(frame, "RUNNING", (10, 125), FONT, 0.75, (0, 140, 255), 2)
                 alert_parts.append("Running")
                 if self._should_alert("running"):
@@ -271,7 +264,7 @@ class SurveillanceEngine:
         # crowd — use zone-resident count when crowd zones are defined
         zone_crowd = self.zones.count_in_activity_zones(self.cam_name, tracked, "crowd")
         crowd_count = visible if zone_crowd is None else zone_crowd
-        if crowd_count > self.CROWD:
+        if crowd_count > self.CROWD and self._is_activity_monitored("Crowd"):
             lbl = f"CROWD ({crowd_count})" + ("" if zone_crowd is None else " in zone")
             cv2.putText(frame, lbl, (10, 155), FONT, 0.8, (0, 60, 255), 2)
             alert_parts.append("Crowd")
@@ -279,13 +272,6 @@ class SurveillanceEngine:
                 self._fire(frame, "crowd", f"{crowd_count} people"
                            + (" in crowd zone" if zone_crowd is not None else " in frame"),
                            "⚠ CROWD ALERT")
-
-        # max capacity
-        if self.MAX_CAPACITY > 0 and visible >= self.MAX_CAPACITY:
-            alert_parts.append("CapacityWarning")
-            if self._should_alert("capacity"):
-                self._fire(frame, "capacity", f"{visible} people — limit {self.MAX_CAPACITY}",
-                           "🔴 CAPACITY LIMIT REACHED")
 
         # zone intrusion - supports multiple zone types (restricted, entry_exit, high_value, loitering)
         frame = self.zones.draw_zones(frame, self.cam_name, tracked)
@@ -312,14 +298,7 @@ class SurveillanceEngine:
                     self._fire(frame, "suspicious",
                              f"High-value area alert: {message}",
                              f"⚠️ SUSPICIOUS ACTIVITY - {zone_id}")
-            
-            elif zone_type == "loitering" and severity == "MEDIUM":
-                alert_parts.append("Loitering")
-                if self._should_alert(f"loiter_{zone_id}"):
-                    self._fire(frame, "loitering",
-                             f"Loitering detected: {message}",
-                             f"⏱️ LOITERING - {zone_id}")
-            
+
             # entry_exit is informational only (LOW severity)
 
         # abandoned object — zone-gate checks whether the item's centroid is in an
@@ -329,7 +308,7 @@ class SurveillanceEngine:
             cx_ab, cy_ab = (x1 + x2) // 2, (y1 + y2) // 2
             in_zone = self.zones.point_in_activity_zone(
                 self.cam_name, (cx_ab, cy_ab), "abandoned_object")
-            if in_zone is None or in_zone:
+            if (in_zone is None or in_zone) and self._is_activity_monitored("AbandonedObject"):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
                 cv2.putText(frame, f"UNATTENDED {ab['type'].upper()}", (x1, y1 - 8),
                             FONT, 0.55, (0, 0, 255), 2)
@@ -338,7 +317,7 @@ class SurveillanceEngine:
                     self._fire(frame, "abandoned", f"Unattended {ab['type']}", "🧳 UNATTENDED ITEM")
 
         # vehicle accident (collision / sudden stop)
-        if self.accident is not None:
+        if self.accident is not None and self._is_activity_monitored("Accident"):
             accidents = self.accident.update(raw_yolo)
             if accidents:
                 if "Accident" not in alert_parts:
@@ -352,13 +331,6 @@ class SurveillanceEngine:
                     top = accidents[0]
                     self._fire(frame, "accident",
                                f"{top['type']} — {top['detail']}", "🚑 VEHICLE ACCIDENT")
-
-        # after-hours
-        if not self._within_hours() and visible > 0 and self._zone_gate("after_hours", tracked):
-            cv2.putText(frame, "AFTER-HOURS MOTION", (10, 185), FONT, 0.75, (0, 0, 255), 2)
-            alert_parts.append("AfterHours")
-            if self._should_alert("after_hours"):
-                self._fire(frame, "after_hours", "Motion after business hours", "🌙 AFTER-HOURS ALERT")
 
         self._draw_hud(frame, visible, alert_parts)
 
@@ -385,16 +357,6 @@ class SurveillanceEngine:
                     (10, 24), FONT, 0.62, (255, 255, 255), 2)
         cv2.putText(frame, f"{self.cam_name}   {datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}",
                     (10, 52), FONT, 0.50, (160, 160, 160), 1)
-
-        if self.MAX_CAPACITY > 0:
-            bar_w = 200
-            fill  = min(bar_w, int(bar_w * visible / self.MAX_CAPACITY))
-            col   = ((0, 0, 220) if visible >= self.MAX_CAPACITY else
-                     (0, 180, 255) if visible >= self.MAX_CAPACITY * 0.8 else (0, 200, 0))
-            cv2.rectangle(frame, (w - bar_w - 10, 8), (w - 10, 28), (60, 60, 60), -1)
-            cv2.rectangle(frame, (w - bar_w - 10, 8), (w - bar_w - 10 + fill, 28), col, -1)
-            cv2.putText(frame, f"Capacity {visible}/{self.MAX_CAPACITY}",
-                        (w - bar_w - 10, 44), FONT, 0.38, (200, 200, 200), 1)
 
         if alert_parts:
             labels = list(dict.fromkeys(alert_parts))

@@ -49,8 +49,6 @@ def pick_alerts(count: int, elapsed_min: float, t: datetime) -> list:
         alerts.append("Intrusion")
     if random.random() < 0.005:
         alerts.append("Tailgating")
-    if (hour < 8 or hour >= 22) and count > 0 and random.random() < 0.6:
-        alerts.append("AfterHours")
     return alerts
 
 

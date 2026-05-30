@@ -34,11 +34,6 @@ detection:
   accident_speed_drop: 0.55   # fractional speed drop counted as an impact
   accident_min_speed:  6      # px/frame a vehicle must have moved to count as "in motion"
 
-business_hours:
-  enabled: true
-  start: "08:00"
-  end:   "22:00"
-
 alerts:
   cooldown_seconds: 60
   captions_enabled: false  # set true if HuggingFace API key is set in .env

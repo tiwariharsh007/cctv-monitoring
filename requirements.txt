@@ -27,8 +27,8 @@ aiohttp
 aiohttp-retry
 python-dotenv
 
-# Image Captioning
-huggingface-hub
+# AI Message Generation
+google-generativeai
 pillow
 
 # Validation / Schema
