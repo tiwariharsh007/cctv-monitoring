@@ -19,6 +19,7 @@ from detectors.zone_intrusion   import ZoneIntrusionDetector
 from detectors.speed            import SpeedDetector
 from detectors.abandoned_object import AbandonedObjectDetector
 from detectors.accident         import AccidentDetector
+from detectors.dwell_time        import DwellTimeTracker
 from alerts import send_email_alert
 from services.alert_service import handle_alert
 
@@ -79,6 +80,7 @@ class SurveillanceEngine:
         self.speed     = SpeedDetector(speed_threshold=self.RUN_SPEED)
         self.abandoned = AbandonedObjectDetector(stationary_frames=self.ABAND_FRAMES)
         self.zones     = ZoneIntrusionDetector()
+        self.dwell     = DwellTimeTracker()
         self._zone_cfg_mtime = self._zone_cfg_mtime_now()
         self.accident  = AccidentDetector(
             iou_threshold=d.get("accident_iou", 0.30),
@@ -187,6 +189,7 @@ class SurveillanceEngine:
         tracked           = self.tracker.update(boxes)
         prev_in, prev_out = self.counter.count_in, self.counter.count_out
         self.counter.update(tracked)
+        self.dwell.update(tracked)
         visible = len(tracked)
 
         # trails
