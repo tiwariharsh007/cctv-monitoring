@@ -92,6 +92,7 @@ class SurveillanceEngine:
         self._fall_frames   = 0
         self._last_crossing = 0.0
         self._last_alert    = {}
+        self.zone_frame_counts = {}        # zone_id → cumulative occupant-frames (this session)
         self.monitored_activities = set()  # Activities to monitor (controlled by dashboard)
         os.makedirs("snapshots", exist_ok=True)
 
@@ -279,6 +280,15 @@ class SurveillanceEngine:
         # zone intrusion - supports multiple zone types (restricted, entry_exit, high_value, loitering)
         frame = self.zones.draw_zones(frame, self.cam_name, tracked)
         wrapped = {oid: {"centroid": pos} for oid, pos in tracked.items()}
+
+        # Accumulate per-zone occupancy across the session so the dashboard's
+        # "Zone Activity" breakdown reflects THIS run (written out on stop).
+        for _z in self.zones.zones.get(self.cam_name, []):
+            _n = len(self.zones._zone_occupants(wrapped, _z))
+            if _n:
+                _zid = _z.get("id", "zone")
+                self.zone_frame_counts[_zid] = self.zone_frame_counts.get(_zid, 0) + _n
+
         zone_alerts = self.zones.detect_intrusions(self.cam_name, wrapped)
         
         for alert in zone_alerts:
@@ -369,6 +379,22 @@ class SurveillanceEngine:
 
         cv2.line(frame, (0, self.LINE_POS), (w, self.LINE_POS), (0, 240, 240), 2)
         cv2.putText(frame, "  IN >>", (10, self.LINE_POS - 6), FONT, 0.38, (0, 240, 240), 1)
+
+    def zone_activity(self):
+        """Per-zone share of total occupant-time this session.
+
+        Returns a list of {zone, frames, percent} for every configured zone on
+        this camera (zones with no activity report 0%). Empty if no zones exist.
+        """
+        zones = self.zones.zones.get(self.cam_name, [])
+        total = sum(self.zone_frame_counts.values())
+        rows = []
+        for z in zones:
+            zid = z.get("id", "zone")
+            frames = self.zone_frame_counts.get(zid, 0)
+            pct = (100.0 * frames / total) if total else 0.0
+            rows.append({"zone": zid, "frames": frames, "percent": round(pct, 1)})
+        return rows
 
     def colored_heatmap(self, frame=None):
         if self.heatmap is None or self.heatmap.max() == 0:

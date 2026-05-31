@@ -102,6 +102,28 @@ def sev_of(alert_str):
     sevs = [SEVERITY.get(p, "LOW") for p in str(alert_str).split()]
     return "HIGH" if "HIGH" in sevs else "MEDIUM" if "MEDIUM" in sevs else "LOW"
 
+def _write_session_outputs(engine, frame=None):
+    """Persist the motion heatmap + zone-activity CSV for the current run.
+
+    Called periodically during analysis and once more on stop, so both the
+    Heatmap image and the Zone Activity chart reflect THIS session's data.
+    """
+    if engine is None:
+        return
+    try:
+        os.makedirs("logs", exist_ok=True)
+        hm = engine.colored_heatmap(frame)
+        if hm is not None:
+            cv2.imwrite(HEATMAP, hm)
+    except Exception:
+        pass
+    try:
+        rows = engine.zone_activity() if hasattr(engine, "zone_activity") else []
+        if rows:
+            pd.DataFrame(rows).to_csv(ZONE_CSV, index=False)
+    except Exception:
+        pass
+
 def _start_analysis(source, label, detect, loop):
     _stop_analysis()
     # Clear the session's traffic rows so analytics tabs show only this run's data
@@ -114,6 +136,13 @@ def _start_analysis(source, label, detect, loop):
             _c.close()
     except Exception:
         pass
+    # Remove the previous run's heatmap / zone-activity so a new analysis never
+    # shows stale visuals before its own data is written.
+    for _stale in (HEATMAP, ZONE_CSV):
+        try:
+            os.remove(_stale)
+        except OSError:
+            pass
     try:
         st.cache_data.clear()
     except Exception:
@@ -125,6 +154,8 @@ def _start_analysis(source, label, detect, loop):
     )
 
 def _stop_analysis():
+    # Flush the final heatmap + zone-activity for the run before tearing down.
+    _write_session_outputs(st.session_state.get("_an_engine"))
     for k, m in [("_an_cap", "release"), ("_an_db", "close")]:
         o = st.session_state.get(k)
         if o:
@@ -546,10 +577,10 @@ with tab0:
             if fnum % 10 == 0:
                 os.makedirs("logs", exist_ok=True)
                 cv2.imwrite(LIVE_PATH, frame)
-            if fnum % 200 == 0:
-                hm = _engine.colored_heatmap(frame)
-                if hm is not None:
-                    cv2.imwrite(HEATMAP, hm)
+            if fnum % 30 == 0:
+                # Refresh heatmap + zone-activity periodically so both update
+                # live (and short clips get at least one write before they end).
+                _write_session_outputs(_engine, frame)
 
         # Layout
         f_col, s_col = st.columns([2, 1])
