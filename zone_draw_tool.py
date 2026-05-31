@@ -15,17 +15,18 @@ Usage (programmatic — called from main.py before monitoring starts):
 Drawing controls:
     LEFT-CLICK   : Add polygon point
     RIGHT-CLICK  : Finish polygon and save zone (intrusion detection)
-    Z            : Undo last point
+    Z            : Undo last point (or last saved zone if none in progress)
     C            : Clear current in-progress polygon
     D            : Delete the last saved zone
-    S            : Save all zones and exit
-    Q            : Quit (prompts to save)
+    S or Q       : Save all zones and exit
+    Esc          : Quit without saving
 """
 
 import cv2
 import json
 import os
 import sys
+import time
 import numpy as np
 
 # ── DPI fix for Windows (must run before any cv2.namedWindow call) ─────────────
@@ -93,6 +94,8 @@ class ZoneDrawingApp:
         self.zones: list       = []
         self.current_zone: list = []    # points being drawn this session
         self._mouse_pos        = (0, 0) # tracks live cursor for rubber-band line
+        self._status           = ""     # transient on-window feedback message
+        self._status_until     = 0.0    # time.time() the message expires
 
         self.load_existing_zones()
 
@@ -182,6 +185,12 @@ class ZoneDrawingApp:
 
     # ── drawing helpers ────────────────────────────────────────────────────────
 
+    def _flash(self, msg: str, secs: float = 2.0):
+        """Show a transient status message on the window (and echo to console)."""
+        self._status       = msg
+        self._status_until = time.time() + secs
+        print(f"  {msg}")
+
     def _draw_saved_zones(self, frame: np.ndarray) -> np.ndarray:
         for zone in self.zones:
             zone_type = zone.get("type", "restricted")
@@ -257,7 +266,7 @@ class ZoneDrawingApp:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1)
 
         keys = ("L-CLICK: add point  |  R-CLICK: finish polygon  |  "
-                "Z: undo  |  C: clear  |  D: del last  |  S: save & exit  |  Q: quit")
+                "Z: undo  |  C: clear  |  D: del last  |  S/Q: save & exit  |  Esc: quit (no save)")
         cv2.putText(frame, keys, (10, 48),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 170, 170), 1)
 
@@ -265,6 +274,15 @@ class ZoneDrawingApp:
             nav = f"N: +30 frames  |  P: -30 frames  |  frame {self.frame_idx}/{self.total_frames}"
             cv2.putText(frame, nav, (10, 64),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1)
+
+        # Transient status banner (undo/clear/delete/quit feedback)
+        if self._status and time.time() < self._status_until:
+            (tw, th), _ = cv2.getTextSize(self._status, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            cx = (frame.shape[1] - tw) // 2
+            cv2.rectangle(frame, (cx - 14, frame.shape[0] - 58),
+                          (cx + tw + 14, frame.shape[0] - 20), (0, 0, 0), -1)
+            cv2.putText(frame, self._status, (cx, frame.shape[0] - 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         return frame
 
     # ── mouse callback ─────────────────────────────────────────────────────────
@@ -339,7 +357,7 @@ class ZoneDrawingApp:
         print(f"\n  Zone Editor  |  Camera: {self.camera_name}  (FULLSCREEN {SW}x{SH})")
         print("  LEFT-CLICK to add polygon points.")
         print("  RIGHT-CLICK (3+ points) to finish and save zone.")
-        print("  Press S to save and exit,  Q to quit without saving.\n")
+        print("  Press S or Q to save and exit,  Esc to quit without saving.\n")
 
         while True:
             # ── build the 1280×720 logic frame ────────────────────────────────
@@ -354,7 +372,12 @@ class ZoneDrawingApp:
             _canvas = np.zeros((SH, SW, 3), dtype=np.uint8)
             _canvas[_y0:_y0+_dh, _x0:_x0+_dw] = _scaled
             cv2.imshow(win, _canvas)
-            key = cv2.waitKey(30) & 0xFF
+            # waitKeyEx preserves keypad / extended codes; mask to the ASCII byte
+            # and also lower-case it so Caps Lock / Shift don't break the controls.
+            raw = cv2.waitKeyEx(30)
+            key = raw & 0xFF
+            if 65 <= key <= 90:          # 'A'–'Z' → 'a'–'z'
+                key += 32
 
             # ── key handling ───────────────────────────────────────────────────
             if key == ord('s'):
@@ -362,28 +385,35 @@ class ZoneDrawingApp:
                 break
 
             elif key == ord('q'):
-                ans = input("\n  Save zones before quitting? [Y/n]: ").strip().lower()
-                if ans != 'n':
-                    self.save_zones()
+                # The window is fullscreen and covers the terminal, so we can't
+                # prompt there. Save what's drawn and quit (Esc = discard & quit).
+                self.save_zones()
+                break
+
+            elif key == 27:              # Esc — quit without saving
+                print("\n  Quit without saving.")
                 break
 
             elif key == ord('z'):
                 if self.current_zone:
                     removed = self.current_zone.pop()
-                    print(f"  Undo — removed point {removed}")
+                    self._flash(f"Undo - removed point {removed}")
+                elif self.zones:
+                    removed = self.zones.pop()
+                    self._flash(f"Undo - removed saved zone {removed['id']}")
                 else:
-                    print("  Nothing to undo.")
+                    self._flash("Nothing to undo")
 
             elif key == ord('c'):
                 self.current_zone = []
-                print("  Current polygon cleared.")
+                self._flash("Current polygon cleared")
 
             elif key == ord('d'):
                 if self.zones:
                     removed = self.zones.pop()
-                    print(f"  Deleted zone: {removed['id']}")
+                    self._flash(f"Deleted zone {removed['id']}")
                 else:
-                    print("  No zones to delete.")
+                    self._flash("No zones to delete")
 
             elif self.cap is not None:
                 if key == ord('n'):

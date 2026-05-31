@@ -25,6 +25,32 @@
             "monitored_activities": [
                 "intrusion"
             ]
+        },
+        {
+            "id": "zone_2",
+            "type": "restricted",
+            "label": "zone_2",
+            "points": [
+                [
+                    640,
+                    318
+                ],
+                [
+                    646,
+                    598
+                ],
+                [
+                    706,
+                    600
+                ],
+                [
+                    708,
+                    316
+                ]
+            ],
+            "monitored_activities": [
+                "intrusion"
+            ]
         }
     ],
     "store_front": [
