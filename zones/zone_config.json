@@ -6,46 +6,20 @@
             "label": "zone_1",
             "points": [
                 [
-                    423,
-                    316
-                ],
-                [
-                    425,
-                    608
-                ],
-                [
-                    519,
-                    608
-                ],
-                [
-                    528,
-                    315
-                ]
-            ],
-            "monitored_activities": [
-                "intrusion"
-            ]
-        },
-        {
-            "id": "zone_2",
-            "type": "restricted",
-            "label": "zone_2",
-            "points": [
-                [
-                    640,
-                    318
+                    645,
+                    347
                 ],
                 [
                     646,
-                    598
-                ],
-                [
-                    706,
                     600
                 ],
                 [
-                    708,
-                    316
+                    704,
+                    600
+                ],
+                [
+                    705,
+                    347
                 ]
             ],
             "monitored_activities": [
