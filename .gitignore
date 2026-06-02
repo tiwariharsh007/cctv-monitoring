@@ -5,8 +5,8 @@ __pycache__/
 *.db
 logs.db
 logs/
-snapshots/
-reports/
+# snapshots/
+# reports/
 *.pyc
 .DS_Store
 yolov8n.pt
